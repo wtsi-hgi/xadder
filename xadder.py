@@ -94,8 +94,10 @@ def xad_handle_comment(node):
     if preview:
         uuid = preview.group(1)
         preview_data = b64decode(preview.group(2).replace(b'\n', b'')).decode('utf-16-le')
-        preview_match = re.match('(.*)\001(.*)\000', preview_data, flags=(re.DOTALL))
+        # FIXME not sure what how this should be extracted - seems to be two bytes then a \000 or \001, then the XML
+        preview_match = re.match('(.*)[\000\001](.*)\000', preview_data, flags=(re.DOTALL))
         if not preview_match:
+            print("preview_data: %s\n%s\n" % (preview_data[0:80], preview.group(2).hex()))
             raise ParseFailure("failed to parse preview")
         preview_preamble = preview_match.group(1).encode('utf-16-le')
         preview_xml = preview_match.group(2).replace('\r\n','\n').replace('\r','\n')
@@ -315,29 +317,23 @@ def handle_assay_body(assay_body):
         else:
             raise UnexpectedNodeError(child, "Unexpected node under <AssayBody> element")
 
-def handle_packed_values(element, measure, packed_values):
+def get_packed_values(packed_values):
+    assert packed_values.nodeType == packed_values.ELEMENT_NODE
     num_values = int(packed_values.attributes.getNamedItem("numvalues").nodeValue)
     var_type = packed_values.attributes.getNamedItem("vartype").nodeValue
     if var_type == "LE_R4":
-        encoded = get_text(packed_values)
-        decoded = b64decode(encoded)
-        values = struct.unpack('<%df'%num_values, decoded)
-        assert len(values) == num_values
-        print("%s %s LE_R4: %s" % (measure, element, ','.join(map(str, values))))
+        unpack_format = 'f'
     elif var_type == "LE_I2":
-        encoded = get_text(packed_values)
-        decoded = b64decode(encoded)
-        values = struct.unpack('<%dh'%num_values, decoded)
-        assert len(values) == num_values
-        print("%s %s LE_I2: %s" % (measure, element, ','.join(map(str, values))))
+        unpack_format = 'h'
     elif var_type == "LE_UI1":
-        encoded = get_text(packed_values)
-        decoded = b64decode(encoded)
-        values = decoded.decode('utf-16-le')
-        assert len(values)*2 == num_values
-        print("%s %s LE_UI1: %s" % (measure, element, values))
+        unpack_format = 'B'
     else:
         raise UnsupportedPackedValueType(var_type)
+    encoded = get_text(packed_values)
+    decoded = b64decode(encoded)
+    values = struct.unpack('<%d%s' % (num_values, unpack_format), decoded)
+    assert len(values) == num_values
+    return values
 
 def handle_voltage(name, voltage):
     assert voltage.nodeName == "Voltage"
@@ -389,9 +385,9 @@ def handle_signal_data(name, signal_data):
         elif child.nodeName == "NumberOfSamples":
             print("%s NumberOfSamples: %s" % (name, get_text(child)))
         elif child.nodeName == "RawSignal":
-            handle_packed_values("RawSignal", name, child)
+            print("%s RawSignal: %s" % (name, ','.join(map(str, get_packed_values(child)))))
         elif child.nodeName == "ScriptStep":
-            handle_packed_values("ScriptStep", name, child)
+            print("%s ScriptStep: %s" % (name, ','.join(map(str, get_packed_values(child)))))
         elif child.nodeName == "UnitX":
             print("%s UnitX: %s" % (name, get_text(child)))
         elif child.nodeName == "UnitY":
@@ -443,7 +439,7 @@ def handle_script(name, script):
         if child.nodeName == "AllowEdit":
             print("%s Script AllowEdit: %s" % (name, get_text(child)))
         elif child.nodeName == "ScriptText":
-            handle_packed_values("ScriptText", "%s Script" % name, child)
+            print("%s ScriptText: '%s'" % (name, bytes(get_packed_values(child)).decode('utf-16-le').replace('\r','\\r').replace('\n','\\n').replace('\'', '\\\'')))
         else:
             raise UnexpectedNodeError(child, "Unexpected node under %s Script element" % name)
 
@@ -474,13 +470,13 @@ def handle_chip(chip):
         elif child.nodeName == "Diagnostics":
             print("Diagnostics: %s" % (child.toxml()))
         elif child.nodeName == "Packet":
-            print("Packet: %s" % (child.toxml()))
+            print("Packet: %s" % (','.join(map(str, get_packed_values(child)))))
         elif child.nodeName == "Imported":
-            print("Imported: %s" % (child.toxml()))
+            print("Imported: %s" % (get_text(child)))
         elif child.nodeName == "HasData":
             print("HasData: %s" % (get_text(child)))
         elif child.nodeName == "NumberOfAcquiredSamples":
-            print("NumberOfAcquiredSamples: %s" % (child.toxml()))
+            print("NumberOfAcquiredSamples: %s" % (get_text(child)))
         elif child.nodeName == "PacketFileName":
             print("PacketFileName: %s" % (child.toxml()))
         else:
